@@ -1,4 +1,5 @@
-% EasyDAV - A simple to deploy WSGI webdav implementation.
+EasyDAV - A simple to deploy WSGI webdav implementation.
+========================================================
 
 License
 -------
@@ -57,6 +58,17 @@ Possible deployment methods are:
    Do as in 2), and after verifying functionality, change the script name
    in .htaccess to *webdav.fcgi*. Note that when using FCGI, any changes
    you make to webdavconfig.py don't come to effect until you kill the process.
+
+Setting up a virtual environment
+--------------------------------
+
+If the required Python packages are not available system-wide, they can be
+installed in a virtual environment.
+
+1. Create a new `venv` directory using command: `python -m virtualenv venv`
+2. Install flup and kid: `venv/bin/pip install flup kid`
+3. Edit the `webdav.cgi` or `webdav.fcgi` file to call `venv/bin/python` instead of `python`.
+
 
 Configuration file
 ------------------
