@@ -565,9 +565,9 @@ def main(environ, start_response):
     request_handlers.
     '''
     try:
-        logging.info(environ.get('REMOTE_ADDR')
-            + ' ' + environ.get('REQUEST_METHOD')
-            + ' ' + environ.get('PATH_INFO'))
+        logging.info(environ.get('REMOTE_ADDR','')
+            + ' ' + environ.get('REQUEST_METHOD','')
+            + ' ' + environ.get('PATH_INFO',''))
         
         request_method = environ.get('REQUEST_METHOD', '').upper()
         
