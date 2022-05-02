@@ -17,11 +17,9 @@ are permitted provided that the following conditions are met:
 '''
 
 __program_name__ = 'EasyDAV'
-__version__ = "0.5-dev"
+__version__ = "0.5-3"
 
 import cgi
-import kid
-import kid.parser
 import logging
 import os
 import os.path
@@ -29,12 +27,16 @@ import shutil
 import sys
 import tempfile
 import zipfile
+import pwd
 
 import davutils
 from davutils import DAVError
 from requestinfo import RequestInfo
 from wsgi_input_wrapper import WSGIInputWrapper
+from flup.server.fcgi import WSGIServer
 import webdavconfig as config
+# use mako templating engine instead of kid (kid is Python2)
+from mako.template import Template
 
 def initialize_logging():
     '''Initialize python logging module based on configuration file.
@@ -42,30 +44,31 @@ def initialize_logging():
     '''
     formatter = logging.Formatter(
     '%(asctime)s %(process)d %(levelname)s %(message)s')
-    
+
     logging.getLogger().setLevel(config.log_level)
-    
+
     if config.log_file:
         mypath = os.path.dirname(os.path.abspath(__file__))
         logfile = os.path.join(mypath, config.log_file)
         filehandler = logging.FileHandler(filename = logfile)
         filehandler.setFormatter(formatter)
         logging.getLogger().addHandler(filehandler)
-    
+
     if sys.stderr.isatty():
         streamhandler = logging.StreamHandler(sys.stderr)
         streamhandler.setFormatter(formatter)
         logging.getLogger().addHandler(streamhandler)
-    
+
     logging.log_init_done = True
 
 # Just initialize logs as soon as this module is imported.
 if not hasattr(logging, 'log_init_done'):
     initialize_logging()
 
-multistatus = kid.load_template('multistatus.kid')
-dirindex = kid.load_template('dirindex.kid')
-activelock = kid.load_template('activelock.kid')
+multistatus = Template(filename='multistatus.mako')
+# Templates yet to be converted to mako
+#dirindex = kid.load_template('dirindex.kid')
+#activelock = kid.load_template('activelock.kid')
 
 def handle_options(reqinfo, start_response):
     '''Handle an OPTIONS request.'''
@@ -79,18 +82,19 @@ def handle_options(reqinfo, start_response):
 def get_resourcetype(path):
     '''Return the contents for <DAV:resourcetype> property.'''
     if os.path.isdir(path):
-        element = kid.parser.Element('{DAV:}collection')
-        return kid.parser.ElementStream([
-            (kid.parser.START, element),
-            (kid.parser.END, element)
-        ])
+        # element = '{DAV:}collection'
+        return '<D:collection />'
+#        return kid.parser.ElementStream([
+#            (kid.parser.START, element),
+#            (kid.parser.END, element)
+#        ])
     else:
         return ''
 
 def get_supportedlock(path):
     '''Return the contents for <DAV:supportedlock> property.'''
     if os.path.isdir(path):
-        return kid.parser.XML('''
+        return '''
             <D:lockentry xmlns:D="DAV">
                 <D:lockscope><D:exclusive /></D:lockscope>
                 <D:locktype><D:write /></D:locktype>
@@ -99,7 +103,7 @@ def get_supportedlock(path):
                 <D:lockscope><D:shared /></D:lockscope>
                 <D:locktype><D:write /></D:locktype>
             </D:lockentry>
-        ''')
+        '''
     else:
         return ''
 
@@ -147,26 +151,26 @@ def read_properties(real_path, requested):
     values.
     '''
     propstats = {}
-    
+
     if requested == 'propname':
         propstats['200 OK'] = []
         for propname in property_handlers.keys():
             propstats['200 OK'].append((propname, ''))
         return propstats
-    
+
     for prop in requested:
-        if not property_handlers.has_key(prop):
+        if prop not in property_handlers:
             davutils.add_to_dict_list(propstats, '404 Not Found: Property', (prop, ''))
             continue
-        
+
         try:
             value = property_handlers[prop][0](real_path)
             davutils.add_to_dict_list(propstats, '200 OK', (prop, value))
-        except Exception, e:
+        except Exception as e:
             logging.error('Property handler ' + repr(prop) + ' failed',
                 exc_info = True)
             davutils.add_to_dict_list(propstats, '500 ' + str(e), (prop, ''))
-    
+
     return propstats
 
 def handle_propfind(reqinfo, start_response):
@@ -176,42 +180,43 @@ def handle_propfind(reqinfo, start_response):
     depth = reqinfo.get_depth('infinity')
     request_props = reqinfo.parse_propfind_body(property_handlers.keys())
     real_path = reqinfo.get_request_path('r')
-    
+
     result_files = []
     for path in davutils.search_directory(real_path, depth):
+        #print(f'propfind: path {path}',file=sys.stderr)
         try:
             reqinfo.assert_read(path)
-        except DAVError, e:
+        except DAVError as e:
             if e.httpstatus.startswith('403'):
                 continue # Skip forbidden paths from listing
             raise
-        
+
         real_url = reqinfo.get_url(path)
         propstats = read_properties(path, request_props)
         result_files.append((real_url, propstats))
 
     start_response('207 Multistatus',
         [('Content-Type', 'text/xml; charset=utf-8')])
-    t = multistatus.Template(result_files = result_files)
-    return [t.serialize(output = 'xml')]
-     
+    t = multistatus.render(result_files = result_files)
+    return [t]
+
 def proppatch_verify_instruction(real_path, instruction):
     '''Verify that the property can be set on the file, or throw a DAVError.
     Used to verify instructions before they are executed.
     '''
     command, propname, propelement = instruction
-    
+
     if command == 'set':
         if propelement.getchildren():
             raise DAVError('409 Conflict: XML property values are not supported')
-        
-        if not property_handlers.has_key(propname):
+
+        if propname not in property_handlers:
             raise DAVError('403 Forbidden: No such property')
-        
+
         if property_handlers[propname][1] is None:
             raise DAVError('403 Forbidden',
                 '<DAV:cannot-modify-protected-property/>')
-    
+
     elif command == 'remove':
         # No properties to remove so far.
         raise DAVError('403 Forbidden: Properties cannot be removed')
@@ -221,9 +226,9 @@ def handle_proppatch(reqinfo, start_response):
     instructions = reqinfo.parse_proppatch()
     real_path = reqinfo.get_request_path('w')
     real_url = reqinfo.get_url(real_path)
-    
+
     propstats = {}
-    
+
     # Servers MUST process PROPPATCH instructions in
     # document order. Instructions MUST either all be
     # executed or none executed. (RFC4918)
@@ -231,37 +236,37 @@ def handle_proppatch(reqinfo, start_response):
         try:
             proppatch_verify_instruction(real_path, instruction)
             davutils.add_to_dict_list(propstats, '200 OK', (instruction[1], ''))
-        except DAVError, e:
+        except DAVError as e:
             davutils.add_to_dict_list(propstats, e, (instruction[1], ''))
-    
+
     if propstats.keys() != ['200 OK']:
-        if propstats.has_key('200 OK'):
+        if '200 OK' in propstats:
             propstats['424 Failed Dependency'] = propstats['200 OK']
             del propstats['200 OK']
     else:
         for command, propname, propelement in instructions:
             property_handlers[propname][1](real_path, propelement.text)
-    
+
     start_response('207 Multistatus',
         [('Content-Type', 'text/xml; charset=utf-8')])
-    t = multistatus.Template(result_files = [(real_url, propstats)])
-    return [t.serialize(output = 'xml')]
+    t = multistatus.render(result_files = [(real_url, propstats)])
+    return [t]
 
 def handle_put(reqinfo, start_response):
     '''Write to a single file, possibly replacing an existing one.'''
     real_path = reqinfo.get_request_path('w')
-    
+
     if os.path.isdir(real_path):
         raise DAVError('405 Method Not Allowed: Overwriting directory')
-    
+
     if os.path.exists(real_path):
         etag = davutils.create_etag(real_path)
     else:
         etag = None
-    
+
     if not reqinfo.check_ifmatch(etag):
         raise DAVError('412 Precondition Failed')
-    
+
     new_file = not os.path.exists(real_path)
     if not new_file:
         # Unlink the old file to reset mode bits.
@@ -272,35 +277,37 @@ def handle_put(reqinfo, start_response):
     outfile = open(real_path, 'wb')
     block_generator = davutils.read_blocks(reqinfo.wsgi_input)
     davutils.write_blocks(outfile, block_generator)
-    
+
     if new_file:
         start_response('201 Created', [])
     else:
         start_response('204 No Content', [])
-    
+
     return ""
 
 def handle_get(reqinfo, start_response):
     '''Download a single file or show directory index.'''
     reqinfo.assert_nobody()
     real_path = reqinfo.get_request_path('r')
-    
+    #print(f'handle_get: real_path: {real_path}',file=sys.stderr)
+
     if os.path.isdir(real_path):
-        return handle_dirindex(reqinfo, start_response)
-    
+        raise DAVError('403 Permission Denied: Path is directory')
+        #return handle_dirindex(reqinfo, start_response)
+
     etag = davutils.create_etag(real_path)
     if not reqinfo.check_ifmatch(etag):
         raise DAVError('412 Precondition Failed')
-    
+
     start_response('200 OK',
         [('Content-Type', davutils.get_mimetype(real_path)),
          ('Etag', etag),
          ('Content-Length', str(os.path.getsize(real_path))),
          ('Last-Modified', davutils.get_rfcformat(os.path.getmtime(real_path)))])
-    
+
     if reqinfo.environ['REQUEST_METHOD'] == 'HEAD':
         return ''
-    
+
     infile = open(real_path, 'rb')
     return davutils.read_blocks(infile)
 
@@ -308,19 +315,19 @@ def handle_mkcol(reqinfo, start_response):
     '''Create a new directory.'''
     reqinfo.assert_nobody()
     real_path = reqinfo.get_request_path('w')
-    
+
     if os.path.exists(real_path):
         raise DAVError('405 Method Not Allowed: Collection already exists')
 
     os.mkdir(real_path)
-    
+
     start_response('201 Created', [])
     return ""
 
 def purge_locks(lockmanager, real_path):
     '''Remove all locks when a resource is moved or removed.'''
     rel_path = davutils.get_relpath(real_path, config.root_dir)
-    
+
     for lock in lockmanager.get_locks(rel_path, True):
         if not davutils.path_inside_directory(lock.path, rel_path):
             continue
@@ -330,20 +337,20 @@ def handle_delete(reqinfo, start_response):
     '''Delete a file or a directory.'''
     reqinfo.assert_nobody()
     real_path = reqinfo.get_request_path('wd')
-    
+
     # Locks on parent directory prohibit deletion of members.
     reqinfo.assert_locks(os.path.dirname(real_path))
-    
+
     if not os.path.exists(real_path):
         raise DAVError('404 Not Found')
-    
+
     if os.path.isdir(real_path):
         shutil.rmtree(real_path)
     else:
         os.unlink(real_path)
-    
+
     purge_locks(reqinfo.lockmanager, real_path)
-    
+
     start_response('204 No Content', [])
     return ""
 
@@ -353,7 +360,7 @@ def handle_copy_move(reqinfo, start_response):
     depth = reqinfo.get_depth()
     real_source = reqinfo.get_request_path('r')
     real_dest = reqinfo.get_destination_path('w')
-    
+
     new_resource = not os.path.exists(real_dest)
     if not new_resource:
         if not reqinfo.get_overwrite():
@@ -362,7 +369,7 @@ def handle_copy_move(reqinfo, start_response):
             shutil.rmtree(real_dest)
         else:
             os.unlink(real_dest)
-    
+
     if reqinfo.environ['REQUEST_METHOD'] == 'COPY':
         if os.path.isdir(real_source):
             if depth == 0:
@@ -376,12 +383,12 @@ def handle_copy_move(reqinfo, start_response):
         real_source = reqinfo.get_request_path('wd')
         shutil.move(real_source, real_dest)
         purge_locks(reqinfo.lockmanager, real_source)
-    
+
     if new_resource:
         start_response('201 Created', [])
     else:
         start_response('204 No Content', [])
-    return ""    
+    return ""
 
 def handle_lock(reqinfo, start_response):
     '''Create a lock or refresh an existing one.'''
@@ -389,7 +396,7 @@ def handle_lock(reqinfo, start_response):
     depth = reqinfo.get_depth()
     real_path = reqinfo.get_request_path('wl')
     rel_path = davutils.get_relpath(real_path, config.root_dir)
-    
+
     if not reqinfo.lockmanager:
         raise DAVError('501 Not Implemented: Lock support disabled')
 
@@ -402,13 +409,13 @@ def handle_lock(reqinfo, start_response):
         shared, owner = reqinfo.parse_lock_body()
         lock = reqinfo.lockmanager.create_lock(rel_path,
             shared, owner, depth, timeout)
-    
+
     if not os.path.exists(real_path):
         status = "201 Created"
         open(real_path, 'w').write('')
     else:
         status = "200 OK"
-    
+
     start_response(status,
         [('Content-Type', 'text/xml; charset=utf-8'),
          ('Lock-Token', lock.urn)])
@@ -423,7 +430,7 @@ def handle_unlock(reqinfo, start_response):
     urn = reqinfo.environ.get('HTTP_LOCK_TOKEN', '').strip(' <>')
 
     if not reqinfo.lockmanager:
-        raise DAVError('501 Not implemented: Lock support disabled')    
+        raise DAVError('501 Not implemented: Lock support disabled')
 
     reqinfo.lockmanager.release_lock(rel_path, urn)
     start_response('204 No Content', [])
@@ -433,36 +440,36 @@ def handle_dirindex(reqinfo, start_response, message = None):
     '''Handle a GET request for a directory.
     Result is unimportant for DAV clients and only ment for WWW browsers.
     '''
-    
+
     if 'r' not in config.html_interface:
         start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
         return ['<html><body><p>Mount this directory using WebDAV.</p>' +
                 '<p>HTML interface is currently disabled.</p>' +
                 '<p>' + __program_name__ + ' ' + __version__ + '</p>']
-    
+
     real_path = reqinfo.get_request_path('r')
     real_url = reqinfo.get_url(real_path)
-    
+
     # No parent directory link in repository root
     has_parent = (reqinfo.root_url.rstrip('/') != real_url.rstrip('/'))
-    
+
     # Check whether to allow file upload.
     try:
         reqinfo.assert_write(real_path)
         can_write = 'w' in config.html_interface
     except DAVError:
         can_write = False
-    
+
     files = os.listdir(real_path)
     for filename in files:
         try:
             reqinfo.assert_read(os.path.join(real_path, filename))
-        except DAVError, e:
+        except DAVError as e:
             if e.httpstatus.startswith('403'):
                 files.remove(filename) # Remove forbidden files from listing
-    
+
     files.sort(key = lambda f: not os.path.isdir(os.path.join(real_path, f)))
-    
+
     start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
     t = dirindex.Template(
         real_url = real_url, real_path = real_path, reqinfo = reqinfo,
@@ -477,46 +484,46 @@ def handle_post(reqinfo, start_response):
     '''
     if 'w' not in config.html_interface:
         raise DAVError('403 HTML interface is configured as read-only')
-    
+
     fields = cgi.FieldStorage(fp = reqinfo.wsgi_input, environ = reqinfo.environ)
     real_path = reqinfo.get_request_path('r')
     message = ""
-    
+
     if fields.getfirst('file'):
         f = fields['file']
         dest_path = os.path.join(real_path, f.filename)
         reqinfo.assert_write(dest_path)
-        
+
         if os.path.isdir(dest_path):
             raise DAVError('405 Method Not Allowed: Overwriting directory')
-    
+
         if os.path.exists(dest_path):
             os.unlink(dest_path)
-        
+
         outfile = open(dest_path, 'wb')
         davutils.write_blocks(outfile, davutils.read_blocks(f.file))
-        
+
         message = "Successfully uploaded " + f.filename + "."
-    
+
     if fields.getfirst('btn_remove'):
         filenames = fields.getlist('select')
-        
+
         for f in filenames:
             rm_path = os.path.join(real_path, f)
             reqinfo.assert_write(rm_path)
-            
+
             if os.path.isdir(rm_path):
                 shutil.rmtree(rm_path)
             else:
                 os.unlink(rm_path)
-        
+
         message = "Successfully removed " + str(len(filenames)) + " files."
-    
+
     if fields.getfirst('btn_download'):
         filenames = fields.getlist('select')
         datafile = tempfile.TemporaryFile()
         zipobj = zipfile.ZipFile(datafile, 'w', zipfile.ZIP_DEFLATED, True)
-        
+
         def check_read(path):
             '''Callback function for zipping to verify that each file in
             the zip has access rights.'''
@@ -525,23 +532,23 @@ def handle_post(reqinfo, start_response):
                 return True
             except DAVError:
                 return False
-        
+
         for f in filenames:
             file_path = os.path.join(real_path, f)
             reqinfo.assert_read(file_path)
             davutils.add_to_zip_recursively(zipobj, file_path,
                 config.root_dir, check_read)
-        
+
         zipobj.close()
-        
+
         start_response('200 OK', [
             ('Content-Type', 'application/zip'),
             ('Content-Length', str(datafile.tell()))
         ])
-        
+
         datafile.seek(0)
         return davutils.read_blocks(datafile)
-    
+
     return handle_dirindex(reqinfo, start_response, message)
 
 request_handlers = {
@@ -568,27 +575,26 @@ def main(environ, start_response):
         logging.info(environ.get('REMOTE_ADDR','')
             + ' ' + environ.get('REQUEST_METHOD','')
             + ' ' + environ.get('PATH_INFO',''))
-        
         request_method = environ.get('REQUEST_METHOD', '').upper()
-        
+
         if environ.get('HTTP_EXPECT') and __name__ == '__main__':
             # Expect should work with fcgi etc., but not with the simple_server
             # that is used for testing.
             start_response('400 Bad Request: Expect not supported', [])
             return ""
-        
+
         environ['wsgi.input'] = WSGIInputWrapper(environ)
-        
+
         try:
             reqinfo = RequestInfo(environ)
-            if request_handlers.has_key(request_method):
+            if request_method in request_handlers:
                 return request_handlers[request_method](reqinfo, start_response)
             else:
                 raise DAVError('501 Not Implemented')
-        except DAVError, e:
+        except DAVError as e:
             environ['wsgi.input'].read() # Discard request body
             if not e.body:
-                logging.warn(e.httpstatus)
+                logging.warning(e.httpstatus)
                 start_response(e.httpstatus, [('Content-Type', 'text/plain')])
                 return [e.httpstatus]
             else:
@@ -597,23 +603,24 @@ def main(environ, start_response):
                 return [e.body]
     except:
         import traceback
-        
+
         exc = traceback.format_exc()
         logging.error('Request handler crashed', exc_info = 1)
-        
+
         if isinstance(environ['wsgi.input'], WSGIInputWrapper):
             environ['wsgi.input'].read()
-        
+
         try:
             start_response('500 Internal Server Error',
                 [('Content-Type', 'text/plain')])
         except AssertionError:
             # Ignore duplicate start_response
             pass
-        
+
         return [exc]
 
 if __name__ == '__main__':
-    from wsgiref.simple_server import make_server
-    server = make_server('localhost', 8080, main)
-    server.serve_forever()
+    passwd = pwd.getpwnam(config.effective_user)
+    os.seteuid(passwd.pw_uid)
+    WSGIServer(main,bindAddress=config.socket_name).run()
+
