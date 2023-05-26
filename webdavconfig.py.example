@@ -3,10 +3,13 @@
 # easydav must be started as root and will become effective_user
 effective_user = 'www'
 
+# chroot to /var/www to match httpd. All pathnames must be relative to chroot
+chroot = '/var/www'
+
 # Socket for communication with httpd via fastcgi.
 # Directory containing socket file must be owned by effective_user for the bind
 # address to be created.
-socket_name = '/var/www/run/webdav.sock'
+socket_name = '/var/run/webdav.sock'
 
 # Root directory for files that are served through WebDAV.
 # Users are denied access outside this directory.
@@ -96,8 +99,8 @@ lock_wait = 5
 # Error logging
 
 # Log path, set to None to disable logging.
-# Path can be relative to webdav.py location or absolute.
-log_file = 'easydav.log'
+# Path should be relative to chroot..
+log_file = '/logs/easydav.log'
 
 # Log level, higher means less verbose output.
 # Levels are defined in python module 'logging':

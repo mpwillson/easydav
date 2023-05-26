@@ -38,7 +38,7 @@ webdavconfig.py.example to webdavconfig.py. You must set (at least)
 **root_dir** in this file. This is the filesystem path to the root
 folder that will contain the files accessible through WebDAV.
 
-You will also need to configure **effective_user** and
+You will also need to configure **chroot**, **effective_user** and
 **socket_file**. See below.
 
 EasyDAV-0.5-3 only supports operation as a FCGI server, operating under
@@ -51,15 +51,16 @@ Add the location of the webdav files to the server configuration in
     location "/webdav/*" {
         authenticate with "/var/htpasswd.db"
         fastcgi {
-                socket "/run/webdav.sock"
+                socket "/var/run/webdav.sock"
         }
     }
 ```
 
 Authentication is required via an ```htpasswd(1)``` created
-authentication file. The socket specified in the fastcgi setting must
-match the value in the ```webdavconfig.py``` file, omitting the
-httpd chroot directory (```/var/www``` in this example).
+authentication file, specified relative to the chroot.. The socket
+specified in the fastcgi setting must match the value in the
+```webdavconfig.py``` file, omitting the httpd chroot directory
+(```/var/www``` in this example).
 
 Start the EasyDav server as root:
 
@@ -77,11 +78,14 @@ The configuration file, **webdavconfig.py**, has the following settings:
   be stored. This directory must be owned by effective_user.
 - **root_url:** Complete url to the repository on web, or None to decide
   automatically.
+- **chroot:** Directory to chroot the Easydav process. This must be the same
+  as the httpd chroot, normally /var/www.
 - **effective_user:** The user name of the effective id EasyDav should
   operate as. This will normally be the same as the web server
   (httpd), 'www'.
 - **socket_name:** The pathname of the socket file, used for FCGI
-  communication with the web server.
+  communication with the web server. The effective_user must have write 
+  access to this directory.
 - **restrict_access:** List of file name patterns that can not be
   accessed at all, not read not written. They also won't show up in
   directory listings.

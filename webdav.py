@@ -62,8 +62,8 @@ def initialize_logging():
     logging.log_init_done = True
 
 # Just initialize logs as soon as this module is imported.
-if not hasattr(logging, 'log_init_done'):
-    initialize_logging()
+#if not hasattr(logging, 'log_init_done'):
+#    initialize_logging()
 
 multistatus = Template(filename='multistatus.mako')
 # Templates yet to be converted to mako
@@ -620,7 +620,17 @@ def main(environ, start_response):
         return [exc]
 
 if __name__ == '__main__':
-    passwd = pwd.getpwnam(config.effective_user)
-    os.seteuid(passwd.pw_uid)
-    WSGIServer(main,bindAddress=config.socket_name).run()
+    if hasattr(config, 'chroot'):
+        os.chdir(config.chroot)
+        os.chroot(config.chroot)
+    if not hasattr(logging, 'log_init_done'):
+        initialize_logging()
 
+    if os.path.exists(config.socket_name):
+        os.remove(config.socket_name);
+
+    if hasattr(config, 'effective_user'):
+        passwd = pwd.getpwnam(config.effective_user)
+        os.seteuid(passwd.pw_uid)
+
+    WSGIServer(main,bindAddress=config.socket_name).run()
