@@ -228,13 +228,12 @@ class RequestInfo(object):
         return real_path
 
     def parse_request_path(self):
-        '''Return relative path based on PATH_INFO.'''
+        '''Return relative path based on PATH_INFO.
+           First component is discarded (httpd location).'''
         # Unlike a URI path, the PATH_INFO is not URL-encoded (RFC3875)
-#        path = self.environ.get('PATH_INFO', '')
-        # works with OpenBSD httpd to get filename
-        path = self.environ.get('REQUEST_URI', '').split('/')[-1]
-        path = path.strip('/')
-        return path
+        path = self.environ.get('PATH_INFO', '').strip('/')
+        path_parts = path.split('/')
+        return '/'.join(path_parts[1:])
 
     def get_request_path(self, mode):
         '''Return the real filesystem path based on PATH_INFO from environment,
